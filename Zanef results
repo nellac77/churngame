@@ -1,0 +1,313 @@
+setwd("~/R develop/analytics summit 2")
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(corrplot)
+
+
+data_dict <- read.csv("data dictionary.csv", as.is = TRUE)
+
+head(data_dict)
+
+unzip("cell2cell-v1.zip", exdir = "~/R develop/analytics summit 2/")
+
+dt <- read.csv("cell2cell-v1.csv", as.is = TRUE) 
+
+
+train_dt <- dt %>% filter(traintest == 1) %>%
+  select(-X.1,-X, -customer,-traintest)
+
+# check for nas
+
+train_dt %>% 
+  summarise_all(funs(sum(is.na(.)))) %>%
+  gather(var, na_count) %>%
+  filter(na_count > 0)
+
+# nas are present will be tackled later
+
+# checking for one hot encoded variables
+
+train_dt %>% mutate_all(funs(ifelse(. %in% c(0,1,NA), 0, 1))) %>%
+  summarise_all(funs(chk = sum)) %>%
+  gather(var, val) %>% 
+  filter(val != 0) %>%
+  mutate(var = substr(var,1,nchar(var) - 4)) %>%
+  pull(var)-> reg_variables
+
+#checking remaining variables
+
+train_dt %>% 
+  select(reg_variables, churn, churndep)  %>%
+  gather(var,val) %>%
+  ggplot(aes(x = val)) +
+  geom_histogram(fill = "navy") +
+  facet_wrap(~ var, scales = "free")
+
+train_dt <- train_dt %>% 
+  select(reg_variables, churn, churndep)
+
+# creating correlation correlations and p value for all variable
+
+train_dt %>% mutate_all(funs(as.numeric)) %>%
+  summarise_all(funs(cor_val = cor.test(., train_dt$churn)$estimate,
+                     p_val = cor.test(., train_dt$churn)$p.value)) %>% 
+  select(-contains("churn")) %>%
+  gather(variable, val) %>%
+  mutate(org_var = ifelse((regexpr("cor_val",variable)>0), 
+                          gsub("_cor_val", "", variable),
+                          gsub("_p_val", "", variable)),
+         s_variable = ifelse((regexpr("cor_val",variable)>0), 
+                             "cor_val","p_val")) %>% 
+  select(-variable) %>% 
+  spread(s_variable, val) %>%
+  arrange(desc(abs(cor_val))) -> train_stat
+
+# removing all with level of confidence less than 2%
+# null hypothesis true correlation = 0
+
+train_stat %>% filter(p_val < 0.02) -> train_stat
+
+# we need to remove higly correlated varibles
+
+train_dt %>% select(train_stat$org_var, churn) %>%
+  cor(use = "pairwise.complete.obs") -> correl
+
+corrplot(correl, method = "circle", type = "upper")
+
+# using the data dictionary the following variables are excluded
+# for revenue = recchrge, mou, peakvce, opeakvce, mourec, incalls
+#               outcalls
+#
+# for age1 = age2, income
+#
+#subset of training variables and check
+
+train_dt %>% select(train_stat$org_var, churn) %>%
+  select(-recchrge, -mou, -peakvce, -opeakvce, 
+         -mourec, -models, incalls, -phones, 
+         -custcare, -outcalls, -unansvce,
+         -setprc, -dropblk, -dropvce,#eqpdays
+          -age2, -income,#age1
+          -incalls, -callwait, -threeway,
+         -roam, -directas, -overage, #revenue
+         -retcalls #retaccpt
+         ) %>%
+  cor(use = "pairwise.complete.obs") -> correl_new
+
+
+corrplot(correl_new, method = "circle", type = "upper")
+
+#check data
+train_dt %>% select(train_stat$org_var, churn) %>%
+  select(-recchrge, -mou, -peakvce, -opeakvce, 
+         -mourec, -models, incalls, -phones, 
+         -custcare, -outcalls, -unansvce,
+         -setprc, -dropblk, -dropvce,#eqpdays
+         -age2, -income,#age1
+         -incalls, -callwait, -threeway,
+         -roam, -directas, -overage, #revenue
+         -retcalls #retaccpt
+  ) %>% gather(var, val) %>%
+  ggplot(aes(x = val)) +
+  geom_histogram(fill = "navy") +
+  facet_wrap(~var, scales = "free")
+
+train_dt %>% select(train_stat$org_var, churn) %>%
+  select(-recchrge, -mou, -peakvce, -opeakvce, 
+         -mourec, -models, incalls, -phones, 
+         -custcare, -outcalls, -unansvce,
+         -setprc, -dropblk, -dropvce,#eqpdays
+         -age2, -income,#age1
+         -incalls, -callwait, -threeway,
+         -roam, -directas, -overage, #revenue
+         -retcalls, #retaccpt
+         -refer, -retaccpt, -uniqsubs # insufficient data
+  ) %>% gather(var, val) %>%
+  ggplot(aes(x = val)) +
+  geom_histogram(fill = "navy") +
+  facet_wrap(~var, scales = "free")
+
+
+
+
+train_dt %>% select(train_stat$org_var, churn) %>%
+  select(-recchrge, -mou, -peakvce, -opeakvce, 
+         -mourec, -models, incalls, -phones, 
+         -custcare, -outcalls, -unansvce,
+         -setprc, -dropblk, -dropvce,#eqpdays
+         -age2, -income,#age1
+         -incalls, -callwait, -threeway,
+         -roam, -directas, -overage, #revenue
+         -retcalls, #retaccpt
+         -refer, -retaccpt, -uniqsubs # insufficient data
+  ) -> train_dt
+
+#check data set
+
+sapply(train_dt, summary)
+
+sapply(train_dt, class)
+
+#transformations to normalise data
+
+normalize <- function(x) {
+  (x - min(x[!is.na(x)]))/(max(x[!is.na(x)]) - min(x[!is.na(x)]))
+}
+
+
+train_dt %>% mutate(months = normalize(months),
+                    revenue = normalize(revenue),
+                    changem = normalize(changem),
+                    revenue = normalize(revenue)) %>%
+  mutate(tot = rowSums(.)) %>%
+  filter(!is.infinite(tot)) %>%
+  select(-tot) -> train_dt
+
+
+
+# train model
+
+model <- glm(churn~., data = train_dt, family = binomial)
+
+
+model
+
+anova(model)
+
+pred_train_dt <- predict(model,train_dt, type = "response")
+
+dt %>% filter(traintest == 0) %>%
+  select(train_stat$org_var, churn) %>%
+  select(train_stat$org_var, churn) %>%
+  select(-recchrge, -mou, -peakvce, -opeakvce, -mourec, 
+         -outcalls, -age2, -income) %>% 
+  mutate(months = normalize(months),
+         revenue = normalize(revenue),
+         changem = normalize(changem),
+         revenue = normalize(revenue)) -> test_dt
+
+#model predict
+
+pred_test_dt <- predict(model,test_dt, type = "response")
+
+#confusion matrix - simple predict
+
+
+test_dt <- cbind(test_dt, pred_test_dt)
+
+#true positive
+tp <- test_dt %>% 
+  filter(churn == 1) %>%
+  filter(pred_test_dt > 0.5) %>% 
+  summarise(count = n()) %>%
+  pull(count)
+
+#true negative
+tn <- test_dt %>% 
+  filter(churn == 0) %>%
+  filter(pred_test_dt <= 0.5) %>% 
+  summarise(count = n()) %>%
+  pull(count)
+
+#false positive
+fp <- test_dt %>% 
+  filter(churn == 0) %>%
+  filter(pred_test_dt > 0.5) %>% 
+  summarise(count = n()) %>%
+  pull(count)
+
+#false negative
+fn <- test_dt %>% 
+  filter(churn == 1) %>%
+  filter(pred_test_dt <= 0.5) %>% 
+  summarise(count = n()) %>%
+  pull(count)
+
+
+accuracy <- (tp + tn)/(tp + tn + fp + fn)*100
+
+accuracy
+
+
+
+
+# K folds testing
+
+for (i in  1:1000)
+{
+  
+  fold <- sample(dt$X, 4000)
+  
+  
+  dt %>% filter(dt$X %in% fold) %>%
+    select(train_stat$org_var, churn) %>%
+    select(train_stat$org_var, churn) %>%
+    select(-recchrge, -mou, -peakvce, -opeakvce, -mourec, 
+           -outcalls, -age2, -income) %>% 
+    mutate(months = normalize(months),
+           revenue = normalize(revenue),
+           changem = normalize(changem),
+           revenue = normalize(revenue)) -> fold_test_dt
+  
+  #model predict
+  
+  pred_test_dt <- predict(model,fold_test_dt, type = "response")
+  
+  #confusion matrix - simple predict
+  
+  
+  test_dt <- cbind(fold_test_dt, pred_test_dt)
+  
+  #true positive
+  tp[i] <- test_dt %>% 
+    filter(churn == 1) %>%
+    filter(pred_test_dt > 0.5) %>% 
+    summarise(count = n()) %>%
+    pull(count)
+  
+  #true negative
+  tn[i] <- test_dt %>% 
+    filter(churn == 0) %>%
+    filter(pred_test_dt <= 0.5) %>% 
+    summarise(count = n()) %>%
+    pull(count)
+  
+  #false positive
+  fp[i] <- test_dt %>% 
+    filter(churn == 0) %>%
+    filter(pred_test_dt > 0.5) %>% 
+    summarise(count = n()) %>%
+    pull(count)
+  
+  #false negative
+  fn[i] <- test_dt %>% 
+    filter(churn == 1) %>%
+    filter(pred_test_dt <= 0.5) %>% 
+    summarise(count = n()) %>%
+    pull(count)
+  
+  
+}
+
+k_fold_results <- data.frame(cbind(tp,tn,fp,fn))
+
+k_fold_results <- k_fold_results %>%
+  mutate(accuracy = (tp + tn)/(tp + tn + fp + fn)*100) %>%
+  mutate(true_positive = tp,
+         true_negative = tn,
+         false_postive = fp,
+         false_negative = fn) %>%
+  select(-fp,-fn,-tp,-tn)
+
+
+k_fold_results %>%
+  gather(var, val) %>% 
+  ggplot() +
+  geom_freqpoly(aes(x = val, color = var)) +
+  facet_wrap(~ var, scales = "free", ncol = 1) +
+  theme(legend.position = "top",
+        legend.title = element_blank())
+
+# ~ 70% accuracy
